@@ -19,30 +19,29 @@ signer    -> zipsigner-lib-1.17.jar
 
 ## NATIVE
 
-aapt      -> Platform_Framework_Base\tools\aapt
-aidl      -> Platform_Framework_Base\tools\aidl
-androidfw -> Platform_Framework_Base\include\androidfw
-
-zipalign  -> Platform_Build\tools\zipalign
 host      -> Platform_Build\lib\host
+zipalign  -> Platform_Build\tools\zipalign
 
 libpng    -> Platform_External_Libpng
 expat     -> Platform_External_Expat
 zlib      -> Platform_External_Zlib
 
-libcutils -> Platform_System_Core\libcutils
-cutils    -> Platform_System_Core\include\cutils
-
-liblog    -> Platform_System_Core\liblog
-log       -> Platform_System_Core\include\log
-
-libutils  -> Platform_System_Core\libutils
-utils     -> Platform_System_Core\include\utils
-
-log.h     -> Platform_System_Core\include\android
+androidfw -> Platform_Framework_Base\include\androidfw
+aapt      -> Platform_Framework_Base\tools\aapt
+aidl      -> Platform_Framework_Base\tools\aidl
 
 asset_manager.h -> Platform_Framework_Native\include\android
 looper.h        -> Platform_Framework_Native\include\android
+
+log.h     -> Platform_System_Core\include\android
+cutils    -> Platform_System_Core\include\cutils
+log       -> Platform_System_Core\include\log
+utils     -> Platform_System_Core\include\utils
+
+libcutils -> Platform_System_Core\libcutils
+liblog    -> Platform_System_Core\liblog
+libutils  -> Platform_System_Core\libutils
+
 
 zopfli    -> zopfli\src
 
@@ -61,6 +60,3 @@ LOCAL_LDLIBS := -lz (zlib)
 LOCAL_LDLIBS += -landroid (o.a. looper.h)
 
 LOCAL_LDLIBS := -ldl (dynamic linker)
-
-
-### android-4.3_r3.1
