@@ -37,7 +37,7 @@ liblog    -> Platform_System_Core\liblog
 log       -> Platform_System_Core\include\log
 
 libutils  -> Platform_System_Core\libutils
-utils     -> Platform_System_Core\include\utils
+utils     -> Platform_System_Core\include\utils // OR _Native
 
 log.h     -> Platform_System_Core\include\android
 
