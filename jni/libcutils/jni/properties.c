@@ -15,63 +15,103 @@
  */
 
 #define LOG_TAG "properties"
+// #define LOG_NDEBUG 0
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <cutils/sockets.h>
 #include <errno.h>
 #include <assert.h>
 
 #include <cutils/properties.h>
+#include <stdbool.h>
+#include <inttypes.h>
 #include "loghack.h"
+
+int8_t property_get_bool(const char *key, int8_t default_value) {
+    if (!key) {
+        return default_value;
+    }
+
+    int8_t result = default_value;
+    char buf[PROPERTY_VALUE_MAX] = {'\0',};
+
+    int len = property_get(key, buf, "");
+    if (len == 1) {
+        char ch = buf[0];
+        if (ch == '0' || ch == 'n') {
+            result = false;
+        } else if (ch == '1' || ch == 'y') {
+            result = true;
+        }
+    } else if (len > 1) {
+         if (!strcmp(buf, "no") || !strcmp(buf, "false") || !strcmp(buf, "off")) {
+            result = false;
+        } else if (!strcmp(buf, "yes") || !strcmp(buf, "true") || !strcmp(buf, "on")) {
+            result = true;
+        }
+    }
+
+    return result;
+}
+
+// Convert string property to int (default if fails); return default value if out of bounds
+static intmax_t property_get_imax(const char *key, intmax_t lower_bound, intmax_t upper_bound,
+        intmax_t default_value) {
+    if (!key) {
+        return default_value;
+    }
+
+    intmax_t result = default_value;
+    char buf[PROPERTY_VALUE_MAX] = {'\0',};
+    char *end = NULL;
+
+    int len = property_get(key, buf, "");
+    if (len > 0) {
+        int tmp = errno;
+        errno = 0;
+
+        // Infer base automatically
+        result = strtoimax(buf, &end, /*base*/0);
+        if ((result == INTMAX_MIN || result == INTMAX_MAX) && errno == ERANGE) {
+            // Over or underflow
+            result = default_value;
+            ALOGV("%s(%s,%" PRIdMAX ") - overflow", __FUNCTION__, key, default_value);
+        } else if (result < lower_bound || result > upper_bound) {
+            // Out of range of requested bounds
+            result = default_value;
+            ALOGV("%s(%s,%" PRIdMAX ") - out of range", __FUNCTION__, key, default_value);
+        } else if (end == buf) {
+            // Numeric conversion failed
+            result = default_value;
+            ALOGV("%s(%s,%" PRIdMAX ") - numeric conversion failed",
+                    __FUNCTION__, key, default_value);
+        }
+
+        errno = tmp;
+    }
+
+    return result;
+}
+
+int64_t property_get_int64(const char *key, int64_t default_value) {
+    return (int64_t)property_get_imax(key, INT64_MIN, INT64_MAX, default_value);
+}
+
+int32_t property_get_int32(const char *key, int32_t default_value) {
+    return (int32_t)property_get_imax(key, INT32_MIN, INT32_MAX, default_value);
+}
 
 #ifdef HAVE_LIBC_SYSTEM_PROPERTIES
 
 #define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
 #include <sys/_system_properties.h>
 
-static int send_prop_msg(prop_msg *msg)
-{
-    int s;
-    int r;
-    
-    s = socket_local_client(PROP_SERVICE_NAME, 
-                            ANDROID_SOCKET_NAMESPACE_RESERVED,
-                            SOCK_STREAM);
-    if(s < 0) return -1;
-    
-    while((r = send(s, msg, sizeof(prop_msg), 0)) < 0) {
-        if((errno == EINTR) || (errno == EAGAIN)) continue;
-        break;
-    }
-
-    if(r == sizeof(prop_msg)) {
-        r = 0;
-    } else {
-        r = -1;
-    }
-
-    close(s);
-    return r;
-}
-
 int property_set(const char *key, const char *value)
 {
-    prop_msg msg;
-    unsigned resp;
-
-    if(key == 0) return -1;
-    if(value == 0) value = "";
-    
-    if(strlen(key) >= PROP_NAME_MAX) return -1;
-    if(strlen(value) >= PROP_VALUE_MAX) return -1;
-    
-    msg.cmd = PROP_MSG_SETPROP;
-    strcpy((char*) msg.name, key);
-    strcpy((char*) msg.value, value);
-
-    return send_prop_msg(&msg);
+    return __system_property_set(key, value);
 }
 
 int property_get(const char *key, char *value, const char *default_value)
@@ -82,27 +122,39 @@ int property_get(const char *key, char *value, const char *default_value)
     if(len > 0) {
         return len;
     }
-    
     if(default_value) {
         len = strlen(default_value);
-        memcpy(value, default_value, len + 1);
+        if (len >= PROPERTY_VALUE_MAX) {
+            len = PROPERTY_VALUE_MAX - 1;
+        }
+        memcpy(value, default_value, len);
+        value[len] = '\0';
     }
     return len;
 }
 
-int property_list(void (*propfn)(const char *key, const char *value, void *cookie), 
-                  void *cookie)
+struct property_list_callback_data
+{
+    void (*propfn)(const char *key, const char *value, void *cookie);
+    void *cookie;
+};
+
+static void property_list_callback(const prop_info *pi, void *cookie)
 {
     char name[PROP_NAME_MAX];
     char value[PROP_VALUE_MAX];
-    const prop_info *pi;
-    unsigned n;
-    
-    for(n = 0; (pi = __system_property_find_nth(n)); n++) {
-        __system_property_read(pi, name, value);
-        propfn(name, value, cookie);
-    }
-    return 0;
+    struct property_list_callback_data *data = cookie;
+
+    __system_property_read(pi, name, value);
+    data->propfn(name, value, data->cookie);
+}
+
+int property_list(
+        void (*propfn)(const char *key, const char *value, void *cookie),
+        void *cookie)
+{
+    struct property_list_callback_data data = { propfn, cookie };
+    return __system_property_foreach(property_list_callback, &data);
 }
 
 #elif defined(HAVE_SYSTEM_PROPERTY_SERVER)
@@ -137,7 +189,7 @@ static int connectToServer(const char* fileName)
     
     sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
-        LOGW("UNIX domain socket create failed (errno=%d)\n", errno);
+        ALOGW("UNIX domain socket create failed (errno=%d)\n", errno);
         return -1;
     }
 
@@ -148,7 +200,7 @@ static int connectToServer(const char* fileName)
     if (cc < 0) {
         // ENOENT means socket file doesn't exist
         // ECONNREFUSED means socket exists but nobody is listening
-        //LOGW("AF_UNIX connect failed for '%s': %s\n",
+        //ALOGW("AF_UNIX connect failed for '%s': %s\n",
         //    fileName, strerror(errno));
         close(sock);
         return -1;
@@ -166,9 +218,9 @@ static void init(void)
 
     gPropFd = connectToServer(SYSTEM_PROPERTY_PIPE_NAME);
     if (gPropFd < 0) {
-        //LOGW("not connected to system property server\n");
+        //ALOGW("not connected to system property server\n");
     } else {
-        //LOGV("Connected to system property server\n");
+        //ALOGV("Connected to system property server\n");
     }
 }
 
@@ -178,7 +230,7 @@ int property_get(const char *key, char *value, const char *default_value)
     char recvBuf[1+PROPERTY_VALUE_MAX];
     int len = -1;
 
-    //LOGV("PROPERTY GET [%s]\n", key);
+    //ALOGV("PROPERTY GET [%s]\n", key);
 
     pthread_once(&gInitOnce, init);
     if (gPropFd < 0) {
@@ -227,12 +279,12 @@ int property_get(const char *key, char *value, const char *default_value)
         strcpy(value, recvBuf+1);
         len = strlen(value);
     } else {
-        LOGE("Got strange response to property_get request (%d)\n",
+        ALOGE("Got strange response to property_get request (%d)\n",
             recvBuf[0]);
         assert(0);
         return -1;
     }
-    //LOGV("PROP [found=%d def='%s'] (%d) [%s]: [%s]\n",
+    //ALOGV("PROP [found=%d def='%s'] (%d) [%s]: [%s]\n",
     //    recvBuf[0], default_value, len, key, value);
 
     return len;
@@ -245,7 +297,7 @@ int property_set(const char *key, const char *value)
     char recvBuf[1];
     int result = -1;
 
-    //LOGV("PROPERTY SET [%s]: [%s]\n", key, value);
+    //ALOGV("PROPERTY SET [%s]: [%s]\n", key, value);
 
     pthread_once(&gInitOnce, init);
     if (gPropFd < 0)
@@ -279,7 +331,7 @@ int property_set(const char *key, const char *value)
 int property_list(void (*propfn)(const char *key, const char *value, void *cookie), 
                   void *cookie)
 {
-    //LOGV("PROPERTY LIST\n");
+    //ALOGV("PROPERTY LIST\n");
     pthread_once(&gInitOnce, init);
     if (gPropFd < 0)
         return -1;

@@ -17,13 +17,16 @@
 #ifndef __CUTILS_UEVENT_H
 #define __CUTILS_UEVENT_H
 
+#include <stdbool.h>
 #include <sys/socket.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-ssize_t uevent_checked_recv(int socket, void *buffer, size_t length);
+int uevent_open_socket(int buf_sz, bool passcred);
+ssize_t uevent_kernel_multicast_recv(int socket, void *buffer, size_t length);
+ssize_t uevent_kernel_multicast_uid_recv(int socket, void *buffer, size_t length, uid_t *uid);
 
 #ifdef __cplusplus
 }

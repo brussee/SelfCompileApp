@@ -1,6 +1,6 @@
-/* //device/libs/cutils/logprint.c
+/*
 **
-** Copyright 2006, The Android Open Source Project
+** Copyright 2006-2014, The Android Open Source Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
 ** you may not use this file except in compliance with the License.
@@ -17,17 +17,17 @@
 
 #define _GNU_SOURCE /* for asprintf */
 
-#include <ctype.h>
-#include <stdio.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <assert.h>
 #include <arpa/inet.h>
+#include <assert.h>
+#include <ctype.h>
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include <cutils/logd.h>
-#include <cutils/logprint.h>
+#include <log/logd.h>
+#include <log/logprint.h>
 
 typedef struct FilterInfo_t {
     char *mTag;
@@ -52,15 +52,7 @@ static FilterInfo * filterinfo_new(const char * tag, android_LogPriority pri)
     return p_ret;
 }
 
-static void filterinfo_free(FilterInfo *p_info)
-{
-    if (p_info == NULL) {
-        return;
-    }
-
-    free(p_info->mTag);
-    p_info->mTag = NULL;
-}
+/* balance to above, filterinfo_free left unimplemented */
 
 /*
  * Note: also accepts 0-9 priorities
@@ -137,23 +129,6 @@ static android_LogPriority filterPriForTag(
     }
 
     return p_format->global_pri;
-}
-
-/** for debugging */
-static void dumpFilters(AndroidLogFormat *p_format)
-{
-    FilterInfo *p_fi;
-
-    for (p_fi = p_format->filters ; p_fi != NULL ; p_fi = p_fi->p_next) {
-        char cPri = filterPriToChar(p_fi->mPri);
-        if (p_fi->mPri == ANDROID_LOG_DEFAULT) {
-            cPri = filterPriToChar(p_format->global_pri);
-        }
-        fprintf(stderr,"%s:%c\n", p_fi->mTag, cPri);
-    }
-
-    fprintf(stderr,"*:%c\n", filterPriToChar(p_format->global_pri));
-
 }
 
 /**
@@ -234,7 +209,6 @@ AndroidLogPrintFormat android_log_formatFromString(const char * formatString)
 int android_log_addFilterRule(AndroidLogFormat *p_format,
         const char *filterExpression)
 {
-    size_t i=0;
     size_t tagNameLength;
     android_LogPriority pri = ANDROID_LOG_DEFAULT;
 
@@ -350,17 +324,63 @@ static inline char * strip_end(char *str)
 int android_log_processLogBuffer(struct logger_entry *buf,
                                  AndroidLogEntry *entry)
 {
-    size_t tag_len;
-
     entry->tv_sec = buf->sec;
     entry->tv_nsec = buf->nsec;
-    entry->priority = buf->msg[0];
     entry->pid = buf->pid;
     entry->tid = buf->tid;
-    entry->tag = buf->msg + 1;
-    tag_len = strlen(entry->tag);
-    entry->messageLen = buf->len - tag_len - 3;
-    entry->message = entry->tag + tag_len + 1;
+
+    /*
+     * format: <priority:1><tag:N>\0<message:N>\0
+     *
+     * tag str
+     *   starts at buf->msg+1
+     * msg
+     *   starts at buf->msg+1+len(tag)+1
+     *
+     * The message may have been truncated by the kernel log driver.
+     * When that happens, we must null-terminate the message ourselves.
+     */
+    if (buf->len < 3) {
+        // An well-formed entry must consist of at least a priority
+        // and two null characters
+        fprintf(stderr, "+++ LOG: entry too small\n");
+        return -1;
+    }
+
+    int msgStart = -1;
+    int msgEnd = -1;
+
+    int i;
+    char *msg = buf->msg;
+    struct logger_entry_v2 *buf2 = (struct logger_entry_v2 *)buf;
+    if (buf2->hdr_size) {
+        msg = ((char *)buf2) + buf2->hdr_size;
+    }
+    for (i = 1; i < buf->len; i++) {
+        if (msg[i] == '\0') {
+            if (msgStart == -1) {
+                msgStart = i + 1;
+            } else {
+                msgEnd = i;
+                break;
+            }
+        }
+    }
+
+    if (msgStart == -1) {
+        fprintf(stderr, "+++ LOG: malformed log message\n");
+        return -1;
+    }
+    if (msgEnd == -1) {
+        // incoming message not null-terminated; force it
+        msgEnd = buf->len - 1;
+        msg[msgEnd] = '\0';
+    }
+
+    entry->priority = msg[0];
+    entry->tag = msg + 1;
+    entry->message = msg + msgStart;
+    entry->messageLen = msgEnd - msgStart;
 
     return 0;
 }
@@ -573,6 +593,10 @@ int android_log_processBinaryLogBuffer(struct logger_entry *buf,
      * Pull the tag out.
      */
     eventData = (const unsigned char*) buf->msg;
+    struct logger_entry_v2 *buf2 = (struct logger_entry_v2 *)buf;
+    if (buf2->hdr_size) {
+        eventData = ((unsigned char *)buf2) + buf2->hdr_size;
+    }
     inCount = buf->len;
     if (inCount < 4)
         return -1;
@@ -632,7 +656,7 @@ int android_log_processBinaryLogBuffer(struct logger_entry *buf,
 
     if (inCount != 0) {
         fprintf(stderr,
-            "Warning: leftover binary log data (%d bytes)\n", inCount);
+            "Warning: leftover binary log data (%zu bytes)\n", inCount);
     }
 
     /*
@@ -668,7 +692,6 @@ char *android_log_formatLogLine (
 #endif
     struct tm* ptm;
     char timeBuf[32];
-    char headerBuf[128];
     char prefixBuf[128], suffixBuf[128];
     char priChar;
     int prefixSuffixIsHeaderFooter = 0;
@@ -712,7 +735,7 @@ char *android_log_formatLogLine (
             break;
         case FORMAT_THREAD:
             prefixLen = snprintf(prefixBuf, sizeof(prefixBuf),
-                "%c(%5d:%p) ", priChar, entry->pid, (void*)entry->tid);
+                "%c(%5d:%5d) ", priChar, entry->pid, entry->tid);
             strcpy(suffixBuf, "\n");
             suffixLen = 1;
             break;
@@ -732,15 +755,15 @@ char *android_log_formatLogLine (
         case FORMAT_THREADTIME:
             prefixLen = snprintf(prefixBuf, sizeof(prefixBuf),
                 "%s.%03ld %5d %5d %c %-8s: ", timeBuf, entry->tv_nsec / 1000000,
-                (int)entry->pid, (int)entry->tid, priChar, entry->tag);
+                entry->pid, entry->tid, priChar, entry->tag);
             strcpy(suffixBuf, "\n");
             suffixLen = 1;
             break;
         case FORMAT_LONG:
             prefixLen = snprintf(prefixBuf, sizeof(prefixBuf),
-                "[ %s.%03ld %5d:%p %c/%-8s ]\n",
+                "[ %s.%03ld %5d:%5d %c/%-8s ]\n",
                 timeBuf, entry->tv_nsec / 1000000, entry->pid,
-                (void*)entry->tid, priChar, entry->tag);
+                entry->tid, priChar, entry->tag);
             strcpy(suffixBuf, "\n\n");
             suffixLen = 2;
             prefixSuffixIsHeaderFooter = 1;
@@ -767,7 +790,6 @@ char *android_log_formatLogLine (
     /* the following code is tragically unreadable */
 
     size_t numLines;
-    size_t i;
     char *p;
     size_t bufferSize;
     const char *pm;
@@ -818,7 +840,6 @@ char *android_log_formatLogLine (
         while(pm < (entry->message + entry->messageLen)) {
             const char *lineStart;
             size_t lineLen;
-
             lineStart = pm;
 
             // Find the next end-of-line in message
@@ -888,89 +909,4 @@ done:
     }
 
     return ret;
-}
-
-
-
-void logprint_run_tests()
-{
-#if 0
-
-    fprintf(stderr, "tests disabled\n");
-
-#else
-
-    int err;
-    const char *tag;
-    AndroidLogFormat *p_format;
-
-    p_format = android_log_format_new();
-
-    fprintf(stderr, "running tests\n");
-
-    tag = "random";
-
-    android_log_addFilterRule(p_format,"*:i");
-
-    assert (ANDROID_LOG_INFO == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) == 0);
-    android_log_addFilterRule(p_format, "*");
-    assert (ANDROID_LOG_DEBUG == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) > 0);
-    android_log_addFilterRule(p_format, "*:v");
-    assert (ANDROID_LOG_VERBOSE == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) > 0);
-    android_log_addFilterRule(p_format, "*:i");
-    assert (ANDROID_LOG_INFO == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) == 0);
-
-    android_log_addFilterRule(p_format, "random");
-    assert (ANDROID_LOG_VERBOSE == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) > 0);
-    android_log_addFilterRule(p_format, "random:v");
-    assert (ANDROID_LOG_VERBOSE == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) > 0);
-    android_log_addFilterRule(p_format, "random:d");
-    assert (ANDROID_LOG_DEBUG == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) > 0);
-    android_log_addFilterRule(p_format, "random:w");
-    assert (ANDROID_LOG_WARN == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) == 0);
-
-    android_log_addFilterRule(p_format, "crap:*");
-    assert (ANDROID_LOG_VERBOSE== filterPriForTag(p_format, "crap"));
-    assert(android_log_shouldPrintLine(p_format, "crap", ANDROID_LOG_VERBOSE) > 0);
-
-    // invalid expression
-    err = android_log_addFilterRule(p_format, "random:z");
-    assert (err < 0);
-    assert (ANDROID_LOG_WARN == filterPriForTag(p_format, "random"));
-    assert(android_log_shouldPrintLine(p_format, tag, ANDROID_LOG_DEBUG) == 0);
-
-    // Issue #550946
-    err = android_log_addFilterString(p_format, " ");
-    assert(err == 0);
-    assert(ANDROID_LOG_WARN == filterPriForTag(p_format, "random"));
-
-    // note trailing space
-    err = android_log_addFilterString(p_format, "*:s random:d ");
-    assert(err == 0);
-    assert(ANDROID_LOG_DEBUG == filterPriForTag(p_format, "random"));
-
-    err = android_log_addFilterString(p_format, "*:s random:z");
-    assert(err < 0);
-
-
-#if 0
-    char *ret;
-    char defaultBuffer[512];
-
-    ret = android_log_formatLogLine(p_format,
-        defaultBuffer, sizeof(defaultBuffer), 0, ANDROID_LOG_ERROR, 123,
-        123, 123, "random", "nofile", strlen("Hello"), "Hello", NULL);
-#endif
-
-
-    fprintf(stderr, "tests complete\n");
-#endif
 }

@@ -1,5 +1,3 @@
-// modified by Tom Arn, www.t-arn.com <ta>
-
 #ifndef SOURCEPOS_H
 #define SOURCEPOS_H
 
@@ -19,15 +17,12 @@ public:
     SourcePos();
     ~SourcePos();
 
-    int error(const char* fmt, ...) const;
-    int warning(const char* fmt, ...) const;
+    void error(const char* fmt, ...) const;
+    void warning(const char* fmt, ...) const;
+    void printf(const char* fmt, ...) const;
 
     static bool hasErrors();
     static void printErrors(FILE* to);
-    
-    //ta
-    static void clear();
-    // </ta>
 };
 
 

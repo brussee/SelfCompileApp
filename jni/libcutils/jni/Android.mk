@@ -24,17 +24,9 @@ endif
 hostSmpFlag := -DANDROID_SMP=0
 
 commonSources := \
-	array.c \
 	hashmap.c \
 	atomic.c.arm \
 	native_handle.c \
-	buffer.c \
-	socket_inaddr_any_server.c \
-	socket_local_client.c \
-	socket_local_server.c \
-	socket_loopback_client.c \
-	socket_loopback_server.c \
-	socket_network_client.c \
 	config_utils.c \
 	cpu_info.c \
 	load_file.c \
@@ -43,54 +35,136 @@ commonSources := \
 	strdup8to16.c \
 	record_stream.c \
 	process_name.c \
-	properties.c \
 	threads.c \
 	sched_policy.c \
 	iosched_policy.c \
 	str_parms.c \
-  abort_socket.c \
-  selector.c \
-  tztime.c \
-  zygote.c
-  
-commonHostSources := \
-        ashmem-host.c \
-        tzstrftime.c
+
+# some files must not be compiled when building against Mingw
+# they correspond to features not used by our host development tools
+# which are also hard or even impossible to port to native Win32
+WINDOWS_HOST_ONLY :=
+ifeq ($(HOST_OS),windows)
+    ifeq ($(strip $(USE_CYGWIN)),)
+        WINDOWS_HOST_ONLY := 1
+    endif
+endif
+# USE_MINGW is defined when we build against Mingw on Linux
+ifneq ($(strip $(USE_MINGW)),)
+    WINDOWS_HOST_ONLY := 1
+endif
+
+ifneq ($(WINDOWS_HOST_ONLY),1)
+    commonSources += \
+        fs.c \
+        multiuser.c \
+        socket_inaddr_any_server.c \
+        socket_local_client.c \
+        socket_local_server.c \
+        socket_loopback_client.c \
+        socket_loopback_server.c \
+        socket_network_client.c \
+        sockets.c \
+
+    commonHostSources += \
+        ashmem-host.c
+
+endif
 
 
-# Shared library for target
+# Static library for host
+# ========================================================
+LOCAL_MODULE := libcutils
+LOCAL_SRC_FILES := $(commonSources) $(commonHostSources) dlmalloc_stubs.c
+LOCAL_STATIC_LIBRARIES := liblog
+LOCAL_CFLAGS += $(hostSmpFlag)
+ifneq ($(HOST_OS),windows)
+LOCAL_CFLAGS += -Werror
+endif
+LOCAL_MULTILIB := both
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_HOST_STATIC_LIBRARY)
+
+
+# Tests for host
 # ========================================================
 include $(CLEAR_VARS)
+LOCAL_MODULE := tst_str_parms
+LOCAL_CFLAGS += -DTEST_STR_PARMS
+ifneq ($(HOST_OS),windows)
+LOCAL_CFLAGS += -Werror
+endif
+LOCAL_SRC_FILES := str_parms.c hashmap.c memory.c
+LOCAL_STATIC_LIBRARIES := liblog
+LOCAL_MODULE_TAGS := optional
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_HOST_EXECUTABLE)
+
+
+# Shared and static library for target
+# ========================================================
+
+include $(CLEAR_VARS)
 LOCAL_MODULE := libcutils
+LOCAL_SRC_FILES := $(commonSources) \
+        android_reboot.c \
+        ashmem-dev.c \
+        debugger.c \
+        klog.c \
+        memory.c \
+        partition_utils.c \
+        properties.c \
+        qtaguid.c \
+        trace.c \
+        uevent.c \
 
-LOCAL_SRC_FILES := $(commonSources) ashmem-dev.c mq.c uevent.c
+LOCAL_SRC_FILES_arm += \
+        arch-arm/memset32.S \
 
-ifeq ($(TARGET_ARCH),arm)
-LOCAL_SRC_FILES += arch-arm/memset32.S
-else  # !arm
-ifeq ($(TARGET_ARCH),sh)
-LOCAL_SRC_FILES += memory.c atomic-android-sh.c
-else  # !sh
-ifeq ($(TARGET_ARCH_VARIANT),x86-atom)
-LOCAL_CFLAGS += -DHAVE_MEMSET16 -DHAVE_MEMSET32
-LOCAL_SRC_FILES += arch-x86/android_memset16.S arch-x86/android_memset32.S memory.c
-else # !x86-atom
-LOCAL_SRC_FILES += memory.c
-endif # !x86-atom
-endif # !sh
-endif # !arm
+LOCAL_SRC_FILES_arm64 += \
+        arch-arm64/android_memset.S \
 
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
+LOCAL_SRC_FILES_mips += \
+        arch-mips/android_memset.c \
 
-LOCAL_CFLAGS += $(targetSmpFlag)
-LOCAL_CFLAGS += -DHAVE_PTHREADS -DHAVE_SCHED_H -DHAVE_SYS_UIO_H -DHAVE_ANDROID_OS -DHAVE_IOCTL -DHAVE_TM_GMTOFF
+LOCAL_SRC_FILES_x86 += \
+        arch-x86/android_memset16.S \
+        arch-x86/android_memset32.S \
 
-LOCAL_LDLIBS += -llog
-LOCAL_LDLIBS += $(LOCAL_PATH)/../../liblog/libs/armeabi/liblog.so
+LOCAL_SRC_FILES_x86_64 += \
+        arch-x86_64/android_memset16_SSE2-atom.S \
+        arch-x86_64/android_memset32_SSE2-atom.S \
 
-$(info Building module $(LOCAL_MODULE) ...)
-$(info LOCAL_PATH=$(LOCAL_PATH))
-$(info LOCAL_C_INCLUDES=$(LOCAL_C_INCLUDES))
+LOCAL_CFLAGS_arm += -DHAVE_MEMSET16 -DHAVE_MEMSET32
+LOCAL_CFLAGS_arm64 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
+LOCAL_CFLAGS_mips += -DHAVE_MEMSET16 -DHAVE_MEMSET32
+LOCAL_CFLAGS_x86 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
+LOCAL_CFLAGS_x86_64 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
 
+LOCAL_C_INCLUDES := $(libcutils_c_includes)
+LOCAL_STATIC_LIBRARIES := liblog
+LOCAL_CFLAGS += $(targetSmpFlag) -Werror
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_STATIC_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := libcutils
+# TODO: remove liblog as whole static library, once we don't have prebuilt that requires
+# liblog symbols present in libcutils.
+LOCAL_WHOLE_STATIC_LIBRARIES := libcutils liblog
+LOCAL_SHARED_LIBRARIES := liblog
+LOCAL_CFLAGS += $(targetSmpFlag) -Werror
+LOCAL_C_INCLUDES := $(libcutils_c_includes)
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_SHARED_LIBRARY)
 
+include $(CLEAR_VARS)
+LOCAL_MODULE := tst_str_parms
+LOCAL_CFLAGS += -DTEST_STR_PARMS -Werror
+LOCAL_SRC_FILES := str_parms.c hashmap.c memory.c
+LOCAL_SHARED_LIBRARIES := liblog
+LOCAL_MODULE_TAGS := optional
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_EXECUTABLE)
+
+include $(call all-makefiles-under,$(LOCAL_PATH))

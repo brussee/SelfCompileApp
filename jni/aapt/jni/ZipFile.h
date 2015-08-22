@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-// modified by Tom Arn, www.t-arn.com <ta>
- 
 //
 // General-purpose Zip archive access.  This class allows both reading and
 // writing to Zip archives, including deletion of existing entries.
@@ -59,11 +57,7 @@ public:
     /*
      * Open a new or existing archive.
      */
-/* <ta>
-    typedef enum {
-*/
     enum {
-// <ta>
         kOpenReadOnly   = 0x01,
         kOpenReadWrite  = 0x02,
         kOpenCreate     = 0x04,     // create if it doesn't exist

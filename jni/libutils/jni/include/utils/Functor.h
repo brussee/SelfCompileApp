@@ -17,11 +17,17 @@
 #ifndef ANDROID_FUNCTOR_H
 #define ANDROID_FUNCTOR_H
 
+#include <utils/Errors.h>
+
 namespace  android {
 
-struct Functor{};
+class Functor {
+public:
+    Functor() {}
+    virtual ~Functor() {}
+    virtual status_t operator ()(int /*what*/, void* /*data*/) { return NO_ERROR; }
+};
 
-}
+}; // namespace android
 
-#endif
-
+#endif // ANDROID_FUNCTOR_H

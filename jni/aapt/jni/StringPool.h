@@ -10,9 +10,9 @@
 #include "Main.h"
 #include "AaptAssets.h"
 
-#include <utils/ResourceTypes.h>
+#include <androidfw/ResourceTypes.h>
 #include <utils/String16.h>
-#include <utils/TextOutput.h>
+#include <utils/TypeHelpers.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -20,7 +20,7 @@
 #include <ctype.h>
 #include <errno.h>
 
-#include <expat.h>
+#include <libexpat/expat.h>
 
 using namespace android;
 
@@ -40,12 +40,28 @@ class StringPool
 public:
     struct entry {
         entry() : offset(0) { }
-        entry(const String16& _value) : value(_value), offset(0) { }
-        entry(const entry& o) : value(o.value), offset(o.offset), indices(o.indices) { }
+        entry(const String16& _value) : value(_value), offset(0), hasStyles(false) { }
+        entry(const entry& o) : value(o.value), offset(o.offset),
+                hasStyles(o.hasStyles), indices(o.indices),
+                configTypeName(o.configTypeName), configs(o.configs) { }
 
         String16 value;
         size_t offset;
+        bool hasStyles;
         Vector<size_t> indices;
+        String8 configTypeName;
+        Vector<ResTable_config> configs;
+
+        String8 makeConfigsString() const;
+
+        int compare(const entry& o) const;
+
+        inline bool operator<(const entry& o) const { return compare(o) < 0; }
+        inline bool operator<=(const entry& o) const { return compare(o) <= 0; }
+        inline bool operator==(const entry& o) const { return compare(o) == 0; }
+        inline bool operator!=(const entry& o) const { return compare(o) != 0; }
+        inline bool operator>=(const entry& o) const { return compare(o) >= 0; }
+        inline bool operator>(const entry& o) const { return compare(o) > 0; }
     };
 
     struct entry_style_span {
@@ -63,16 +79,10 @@ public:
     };
 
     /**
-     * If 'sorted' is true, then the final strings in the resource data
-     * structure will be generated in sorted order.  This allow for fast
-     * lookup with ResStringPool::indexOfString() (O(log n)), at the expense
-     * of support for styled string entries (which requires the same string
-     * be included multiple times in the pool).
-     *
      * If 'utf8' is true, strings will be encoded with UTF-8 instead of
      * left in Java's native UTF-16.
      */
-    explicit StringPool(bool sorted = false, bool utf8 = false);
+    explicit StringPool(bool utf8 = false);
 
     /**
      * Add a new string to the pool.  If mergeDuplicates is true, thenif
@@ -80,27 +90,30 @@ public:
      * otherwise, or if the value doesn't already exist, a new entry is
      * created.
      *
-     * Returns the index in the entry array of the new string entry.  Note that
-     * if this string pool is sorted, the returned index will not be valid
-     * when the pool is finally written.
+     * Returns the index in the entry array of the new string entry.
      */
-    ssize_t add(const String16& value, bool mergeDuplicates = false);
+    ssize_t add(const String16& value, bool mergeDuplicates = false,
+            const String8* configTypeName = NULL, const ResTable_config* config = NULL);
 
-    ssize_t add(const String16& value, const Vector<entry_style_span>& spans);
-
-    ssize_t add(const String16& ident, const String16& value,
-                bool mergeDuplicates = false);
+    ssize_t add(const String16& value, const Vector<entry_style_span>& spans,
+            const String8* configTypeName = NULL, const ResTable_config* config = NULL);
 
     status_t addStyleSpan(size_t idx, const String16& name,
                           uint32_t start, uint32_t end);
     status_t addStyleSpans(size_t idx, const Vector<entry_style_span>& spans);
     status_t addStyleSpan(size_t idx, const entry_style_span& span);
 
-    size_t size() const;
+    // Sort the contents of the string block by the configuration associated
+    // with each item.  After doing this you can use mapOriginalPosToNewPos()
+    // to find out the new position given the position originally returned by
+    // add().
+    void sortByConfig();
 
-    const entry& entryAt(size_t idx) const;
-
-    size_t countIdentifiers() const;
+    // For use after sortByConfig() to map from the original position of
+    // a string to its new sorted position.
+    size_t mapOriginalPosToNewPos(size_t originalPos) const {
+        return mOriginalPosToNewPos.itemAt(originalPos);
+    }
 
     sp<AaptFile> createStringBlock();
 
@@ -125,27 +138,45 @@ public:
     const Vector<size_t>* offsetsForString(const String16& val) const;
 
 private:
-    const bool                              mSorted;
+    static int config_sort(void* state, const void* lhs, const void* rhs);
+
     const bool                              mUTF8;
-    // Raw array of unique strings, in some arbitrary order.
+
+    // The following data structures represent the actual structures
+    // that will be generated for the final string pool.
+
+    // Raw array of unique strings, in some arbitrary order.  This is the
+    // actual strings that appear in the final string pool, in the order
+    // that they will be written.
     Vector<entry>                           mEntries;
     // Array of indices into mEntries, in the order they were
     // added to the pool.  This can be different than mEntries
     // if the same string was added multiple times (it will appear
     // once in mEntries, with multiple occurrences in this array).
+    // This is the lookup array that will be written for finding
+    // the string for each offset/position in the string pool.
     Vector<size_t>                          mEntryArray;
     // Optional style span information associated with each index of
     // mEntryArray.
     Vector<entry_style>                     mEntryStyleArray;
-    // Mapping from indices in mEntryArray to indices in mValues.
-    Vector<size_t>                          mEntryArrayToValues;
+
+    // The following data structures are used for book-keeping as the
+    // string pool is constructed.
+
     // Unique set of all the strings added to the pool, mapped to
     // the first index of mEntryArray where the value was added.
     DefaultKeyedVector<String16, ssize_t>   mValues;
-    // Unique set of all (optional) identifiers of strings in the
-    // pool, mapping to indices in mEntries.
-    DefaultKeyedVector<String16, ssize_t>   mIdents;
+    // This array maps from the original position a string was placed at
+    // in mEntryArray to its new position after being sorted with sortByConfig().
+    Vector<size_t>                          mOriginalPosToNewPos;
+};
 
+// The entry types are trivially movable because all fields they contain, including
+// the vectors and strings, are trivially movable.
+namespace android {
+    ANDROID_TRIVIAL_MOVE_TRAIT(StringPool::entry);
+    ANDROID_TRIVIAL_MOVE_TRAIT(StringPool::entry_style_span);
+    ANDROID_TRIVIAL_MOVE_TRAIT(StringPool::entry_style);
 };
 
 #endif
